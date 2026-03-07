@@ -583,9 +583,9 @@
     <div class="card">
       <div class="card-header"><span class="icon">🗺️</span> ผังการจัดเรียง (Nesting Layout)</div>
       <div class="card-body">
-        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;">
-          <div id="nestCanvasContainer" style="overflow-x:auto;flex-shrink:0;display:flex;gap:16px;flex-wrap:wrap;"></div>
-          <div id="nest_legend" style="min-width:200px;flex:1;max-width:320px;"></div>
+        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;width:100%;overflow:hidden;">
+          <div id="nestCanvasContainer" style="flex:1 1 400px;min-width:0;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;"></div>
+          <div id="nest_legend" style="flex:0 0 220px;min-width:180px;max-width:280px;"></div>
         </div>
       </div>
     </div>
@@ -2258,8 +2258,20 @@ function renderNestStats(bestN, result, sheetArea, usedArea, wastePct, mat, dims
 function renderNestCanvas(sheetsArray, dims, gap, bestN, isMultiSheet, sheetsNeeded) {
   const container = document.getElementById('nestCanvasContainer');
   container.innerHTML = '';
-  const maxW = Math.min(680, (window.innerWidth || 800) - 48);
-  const maxH = 1100;
+
+  // Multi-sheet: smaller canvases that wrap into a 2-column grid
+  // Normal: single large canvas
+  const availW = Math.min(900, (window.innerWidth || 900) - 64);
+  let maxW, maxH;
+  if (isMultiSheet && sheetsNeeded > 1) {
+    maxW = Math.min(320, Math.floor((availW - 32) / 2));
+    maxH = 560;
+    container.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;width:100%;';
+  } else {
+    maxW = Math.min(680, availW);
+    maxH = 1100;
+    container.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;';
+  }
   const scale = Math.min(maxW / dims.w, maxH / dims.h);
 
   sheetsArray.forEach((placed, sheetIdx) => {
@@ -2436,4 +2448,107 @@ function renderNestArea(surfData, totalPerSet, bestN, mat, isMultiSheet, sheetsN
         <th class="td-center">ขนาด (mm)</th>
         <th class="td-center">จำนวน/ชุด</th>
         <th class="td-num">พื้นที่ 1 ด้าน (ตร.ม.)</th>
-        <th class="td-num">2 ด้าน × 1 ชิ้น</
+        <th class="td-num">2 ด้าน × 1 ชิ้น</th>
+        <th class="td-num">2 ด้าน × ทั้งชุด</th>
+      </tr></thead><tbody>`;
+
+  surfData.forEach(s => {
+    const dimLabel = s.shape === 'circle' ? `Ø${s.diameter} mm (วงกลม)` : `${s.w} × ${s.h}`;
+    const oneSideArea = s.areaSingle / 2;
+    html += `<tr>
+      <td><b>${s.name}</b></td>
+      <td class="td-center">${dimLabel}</td>
+      <td class="td-center">${s.qty} ชิ้น</td>
+      <td class="td-num">${(oneSideArea / 1e6).toFixed(6)}</td>
+      <td class="td-num">${(s.areaSingle / 1e6).toFixed(6)}</td>
+      <td class="td-num"><b>${(s.areaSet / 1e6).toFixed(6)}</b></td>
+    </tr>`;
+  });
+
+  html += `</tbody></table>
+    <div class="breakdown-row total">
+      <span>พื้นที่ผิว 2 ด้าน รวม 1 ชุด</span>
+      <span class="amount">${(totalPerSet / 1e6).toFixed(4)} ตร.ม.</span>
+    </div>`;
+
+  if (bestN > 0 || isMultiSheet) {
+    const costHairline = totalPerSet / 1e6 * POLISH_RATE.Stainless; // 400 ฿/sqm
+    const costScotch   = totalPerSet / 1e6 * POLISH_RATE.Aluminum;  // 300 ฿/sqm
+
+    // Store result for linking to Calc page
+    nestPolishResult = {
+      matType:      mat ? mat.type              : 'Unknown',
+      matId:        mat ? mat.id                : null,
+      bestN:        isMultiSheet ? 1 : bestN,
+      finish:       mat ? (mat.finish || mat.grade || '') : '',
+      hairline:     costHairline,
+      scotch:       costScotch,
+      areaSqm:      totalPerSet / 1e6,
+      isMultiSheet: !!isMultiSheet,
+      sheetsNeeded: isMultiSheet ? (sheetsNeeded || 1) : 1,
+    };
+
+    if (isMultiSheet) {
+      html += `
+        <div class="breakdown-row" style="color:#e65100;background:#fff3e0;border-radius:6px;padding:8px 14px;margin-top:8px;">
+          <span>🗂️ Multi-Sheet: 1 ชุด ต้องใช้ ${sheetsNeeded} แผ่น</span>
+          <span class="amount">${(totalPerSet / 1e6).toFixed(4)} ตร.ม. / ชุด</span>
+        </div>`;
+    } else {
+      const totalSheetArea = totalPerSet * bestN / 1e6;
+      html += `
+        <div class="breakdown-row" style="color:var(--primary-light);">
+          <span>× ${bestN} ชุด/แผ่น = พื้นที่ผิวทั้งแผ่น</span>
+          <span class="amount">${totalSheetArea.toFixed(4)} ตร.ม.</span>
+        </div>`;
+    }
+
+    html += `
+      <hr class="divider">
+      <div class="section-title" style="margin-top:12px;">ประมาณค่าขัด/ทำผิว (ต่อ 1 ชุด)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;">
+        <div style="background:#e3f2fd;border-radius:8px;padding:12px;">
+          <div style="font-size:12px;font-weight:700;color:#1565c0;margin-bottom:4px;">ขัดแฮร์ไลน์ Stainless (฿${POLISH_RATE.Stainless}/ตร.ม.)</div>
+          <div style="font-size:18px;font-weight:800;color:#1565c0;">฿${fmt(costHairline)}</div>
+          <div style="font-size:11px;color:var(--muted);">ต่อ 1 ชุด</div>
+        </div>
+        <div style="background:#e8f5e9;border-radius:8px;padding:12px;">
+          <div style="font-size:12px;font-weight:700;color:var(--success);margin-bottom:4px;">ขัดสก็อตไบร์ท Aluminum (฿${POLISH_RATE.Aluminum}/ตร.ม.)</div>
+          <div style="font-size:18px;font-weight:800;color:var(--success);">฿${fmt(costScotch)}</div>
+          <div style="font-size:11px;color:var(--muted);">ต่อ 1 ชุด</div>
+        </div>
+        <div style="background:#fff3e0;border-radius:8px;padding:12px;">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);margin-bottom:4px;">พื้นที่ผิวรวม</div>
+          <div style="font-size:18px;font-weight:800;color:var(--accent);">${(totalPerSet/1e6).toFixed(4)} ตร.ม.</div>
+          <div style="font-size:11px;color:var(--muted);">2 ด้าน · ต่อ 1 ชุด</div>
+        </div>
+      </div>
+      <div style="margin-top:16px;background:#e8f5e9;border:1.5px solid #81c784;border-radius:8px;padding:12px 16px;">
+        <div style="font-size:13px;font-weight:700;color:var(--success);margin-bottom:8px;">✅ พร้อมโยงผลไปหน้าคำนวณราคา</div>
+        <div style="font-size:12px;color:var(--text);margin-bottom:10px;display:flex;flex-direction:column;gap:3px;">
+          <span>📦 วัสดุ: <b>${mat ? mat.type+' '+mat.size+' '+mat.thick+'mm' : ''}</b></span>
+          ${isMultiSheet
+            ? `<span>🗂️ Multi-Sheet: <b>1 ชุด ต้องใช้ ${sheetsNeeded} แผ่น</b> (จะใส่จำนวนแผ่นอัตโนมัติ)</span>`
+            : `<span>✂️ Yield: <b>${bestN} ชุด/แผ่น</b> (จะใส่ใน "ตัดได้" อัตโนมัติ)</span>`
+          }
+          <span>✨ ค่า${mat && mat.type==='Aluminum'?'ขัดสก็อตไบร์ท':'ขัดแฮร์ไลน์'}: <b>฿${fmt(mat && mat.type==='Aluminum'?costScotch:costHairline)}/ชุด</b> (เปิดใช้งานอัตโนมัติ)</span>
+        </div>
+        <button class="btn btn-success no-print" style="padding:10px 22px;font-size:14px;" onclick="applyNestPolish()">
+          🚀 ส่งทั้งหมดไปหน้าคำนวณราคา
+        </button>
+      </div>`;
+  }
+
+  document.getElementById('nest_areaContent').innerHTML = html;
+}
+
+// =========================================================
+// UTILS
+// =========================================================
+function fmt(n, d=2) {
+  if (isNaN(n)) return '0.00';
+  return parseFloat(n).toLocaleString('th-TH', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+</script>
+</body>
+</html>
