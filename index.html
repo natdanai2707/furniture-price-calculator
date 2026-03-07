@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>โปรแกรมคำนวณราคาเฟอร์นิเจอร์โลหะ</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
 <style>
   :root {
     --primary: #1a3a5c;
@@ -648,8 +649,8 @@ const DEFAULT_SERVICES = [
   { id:'weld',     name:'ค่าเชื่อม',                       unitPrice:0,   qty:1, unit:'จุด',   enabled:false, polishType:null },
   { id:'grind',    name:'ปาด เจีย ลบคม',                   unitPrice:100, qty:1, unit:'ชิ้น',  enabled:true,  polishType:null },
   { id:'paint',    name:'ค่าทำสี (เหล็ก)',                 unitPrice:0,   qty:1, unit:'ชิ้น',  enabled:false, polishType:null },
-  { id:'hairline', name:'ค่าขัดแฮร์ไลน์ (สแตนเลส)',       unitPrice:0,   qty:1, unit:'ชิ้น',  enabled:false, polishType:'hairline' },
-  { id:'scotch',   name:'ค่าขัดสก็อตไบร์ท (อลูมิเนียม)',  unitPrice:0,   qty:1, unit:'ชิ้น',  enabled:false, polishType:'scotch' },
+  { id:'hairline', name:'ค่าขัดแฮร์ไลน์ (สแตนเลส)',       unitPrice:0,   qty:1, unit:'ชิ้น',  enabled:false, polishType:'hairline', sides:2 },
+  { id:'scotch',   name:'ค่าขัดสก็อตไบร์ท (อลูมิเนียม)',  unitPrice:0,   qty:1, unit:'ชิ้น',  enabled:false, polishType:'scotch',   sides:2 },
   { id:'sandblast',name:'ยิงทราย',                         unitPrice:0,   qty:1, unit:'ชิ้น',  enabled:false, polishType:null },
   { id:'labor',    name:'ค่าแรงประกอบ',                    unitPrice:300, qty:1, unit:'ชิ้น',  enabled:false, polishType:null },
   { id:'screw',    name:'สกรู/อุปกรณ์ยึด',                 unitPrice:10,  qty:4, unit:'ชุด',   enabled:true,  polishType:null },
@@ -801,7 +802,8 @@ function updateMaterial(id, key, val) {
 function initServices() {
   DEFAULT_SERVICES.forEach(s => {
     services.push({ id:++svcIdCounter, name:s.name, unitPrice:s.unitPrice, qty:s.qty,
-                    unit:s.unit, enabled:s.enabled, polishType:s.polishType||null });
+                    unit:s.unit, enabled:s.enabled, polishType:s.polishType||null,
+                    sides: s.sides||2, polishAreaSqm:null, polishRate:null });
   });
   renderServices();
 }
@@ -872,8 +874,13 @@ function renderServices() {
         <span style="font-size:11px;color:var(--muted);white-space:nowrap;">${s.unit||''}</span>
       </div>
       <div style="${op}">
-        <span style="font-family:monospace;font-weight:700;color:var(--primary);font-size:13px;">฿${fmt(s.enabled?total:0)}</span>
+        <span style="font-family:monospace;font-weight:700;color:var(--primary);font-size:13px;">฿${fmt(s.enabled?(s.polishType&&s.sides===1?total*0.5:total):0)}</span>
         ${s.qty > 1 && s.enabled ? `<div style="font-size:10px;color:var(--muted);">฿${s.unitPrice}×${s.qty}</div>` : ''}
+        ${s.polishType && s.enabled ? `
+        <div style="display:flex;gap:4px;margin-top:4px;">
+          <button class="btn btn-xs ${s.sides===2?'btn-primary':'btn-outline'}" onclick="setPolishSides(${s.id},2)" title="คิดราคาขัด 2 ด้าน">2 ด้าน</button>
+          <button class="btn btn-xs ${s.sides===1?'btn-primary':'btn-outline'}" onclick="setPolishSides(${s.id},1)" title="คิดราคาขัด 1 ด้าน (ครึ่งราคา)">1 ด้าน</button>
+        </div>` : ''}
       </div>
       <button class="btn btn-danger btn-xs no-print" onclick="removeService(${s.id})">✕</button>
     `;
@@ -884,6 +891,11 @@ function renderServices() {
 function updateService(id, key, val) {
   const s = services.find(x => x.id === id);
   if (s) { s[key] = val; renderServices(); calculate(); }
+}
+
+function setPolishSides(id, sides) {
+  const s = services.find(x => x.id === id);
+  if (s && s.polishType) { s.sides = sides; renderServices(); calculate(); }
 }
 
 // โยงวัสดุ + Yield + ค่าขัดจาก Nesting มาใส่หน้าคำนวณครบชุด
@@ -910,13 +922,16 @@ function applyNestPolish() {
   const hl = services.find(s => s.polishType === 'hairline');
   const sc = services.find(s => s.polishType === 'scotch');
   if (np.matType === 'Stainless') {
-    if (hl) { hl.unitPrice = Math.round(np.hairline); hl.qty = 1; hl.enabled = true; }
+    if (hl) { hl.unitPrice = Math.round(np.hairline); hl.qty = 1; hl.enabled = true;
+              hl.polishAreaSqm = np.areaSqm; hl.polishRate = POLISH_RATE.Stainless; hl.sides = hl.sides||2; }
     if (sc) { sc.enabled = false; }
   } else if (np.matType === 'Aluminum') {
-    if (sc) { sc.unitPrice = Math.round(np.scotch); sc.qty = 1; sc.enabled = true; }
+    if (sc) { sc.unitPrice = Math.round(np.scotch); sc.qty = 1; sc.enabled = true;
+              sc.polishAreaSqm = np.areaSqm; sc.polishRate = POLISH_RATE.Aluminum; sc.sides = sc.sides||2; }
     if (hl) { hl.enabled = false; }
   } else {
-    if (hl) { hl.unitPrice = Math.round(np.hairline); hl.qty = 1; hl.enabled = true; }
+    if (hl) { hl.unitPrice = Math.round(np.hairline); hl.qty = 1; hl.enabled = true;
+              hl.polishAreaSqm = np.areaSqm; hl.polishRate = POLISH_RATE.Stainless; hl.sides = hl.sides||2; }
   }
 
   // ── 3. Re-render ทุกส่วน ──────────────────────────────────
@@ -1002,9 +1017,14 @@ function calculate() {
   let svcBreakdown = [];
   services.forEach(s => {
     if (s.enabled) {
-      const svcTotal = s.unitPrice * s.qty;
+      const sidesMulti = s.polishType && s.sides === 1 ? 0.5 : 1.0;
+      const svcTotal = s.unitPrice * s.qty * sidesMulti;
       svcCost += svcTotal;
-      if (svcTotal > 0) svcBreakdown.push({ name: s.name, cost: svcTotal, unitPrice: s.unitPrice, qty: s.qty, unit: s.unit });
+      if (svcTotal > 0) svcBreakdown.push({
+        name: s.name, cost: svcTotal, unitPrice: s.unitPrice, qty: s.qty, unit: s.unit,
+        polishType: s.polishType||null, sides: s.sides||2,
+        polishAreaSqm: s.polishAreaSqm||null, polishRate: s.polishRate||null,
+      });
     }
   });
 
@@ -1044,7 +1064,35 @@ function calculate() {
 
   // Breakdown
   const bd = document.getElementById('breakdown');
-  let html = '';
+  const productName  = document.getElementById('productName').value.trim()  || '(ไม่ระบุชื่อ)';
+  const productType  = document.getElementById('productType').value  || '';
+  const customerName = document.getElementById('customerName').value.trim() || '(ไม่ระบุลูกค้า)';
+  const jobType      = document.getElementById('jobType').value || '';
+  const today = new Date().toLocaleDateString('th-TH',{year:'numeric',month:'long',day:'numeric'});
+
+  // Store snapshot for Excel export
+  window._lastQuote = {
+    date: new Date().toLocaleDateString('th-TH'),
+    productName, productType, customerName, jobType,
+    qty, markupPct, singlePremium,
+    matCost, svcCost, otherCost, costPerUnit,
+    totalCost, sellPerUnit, totalSell, profit, singlePrice,
+    matBreakdown, svcBreakdown, otherBreakdown,
+  };
+
+  let html = `
+  <div style="background:linear-gradient(135deg,#e8eef4,#f0f4f8);border-radius:10px;padding:14px 18px;margin-bottom:18px;
+              display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;
+              border-left:4px solid var(--primary);">
+    <div>
+      <div style="font-size:17px;font-weight:800;color:var(--primary);">${productName}</div>
+      ${productType ? `<div style="font-size:13px;color:var(--muted);margin-top:2px;">📦 ${productType}${jobType==='oem'?' · OEM':' · In-house'}</div>` : ''}
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:13px;font-weight:600;">👤 ${customerName}</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:2px;">📅 ${today}</div>
+    </div>
+  </div>`;
 
   if (matBreakdown.length) {
     html += `<div class="section-title">วัสดุ</div>`;
@@ -1062,8 +1110,15 @@ function calculate() {
   if (svcBreakdown.length) {
     html += `<hr class="divider"><div class="section-title">ค่าบริการ</div>`;
     svcBreakdown.forEach(b => {
+      let detail = '';
+      if (b.polishType && b.polishRate && b.polishAreaSqm) {
+        const effectiveArea = b.polishAreaSqm * (b.sides === 1 ? 0.5 : 1);
+        detail = `฿${b.polishRate}/ตร.ม. × ${fmt(b.polishAreaSqm,3)} ตร.ม. ${b.sides===1?'(1 ด้าน = ÷2)':'(2 ด้าน)'}`;
+      } else if (b.qty > 1) {
+        detail = `฿${fmt(b.unitPrice)} × ${b.qty} ${b.unit||''}`;
+      }
       html += `<div class="breakdown-row">
-        <span class="name">⚙️ ${b.name}${b.qty > 1 ? `<br><small style="color:var(--muted);font-size:11px;">฿${b.unitPrice} × ${b.qty} ${b.unit||''}</small>` : ''}</span>
+        <span class="name">⚙️ ${b.name}${detail ? `<br><small style="color:var(--muted);font-size:11px;">${detail}</small>` : ''}</span>
         <span class="amount">฿${fmt(b.cost)}/ชิ้น</span>
       </div>`;
     });
@@ -1125,11 +1180,311 @@ function calculate() {
     </div>`;
   }
 
+  // Save button at bottom of breakdown
+  html += `
+  <div style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;" class="no-print">
+    <button class="btn btn-success" onclick="saveQuote()" style="font-size:14px;">
+      💾 บันทึกลง Excel Database
+    </button>
+    <button class="btn btn-outline btn-sm" onclick="exportHistory()" id="btn_exportAll" style="display:none;">
+      📥 Export ทั้งหมด
+    </button>
+    <span id="historyCount" style="font-size:12px;color:var(--muted);"></span>
+  </div>`;
+
   bd.innerHTML = html;
+  updateHistoryCount();
 
   // Update service/other totals display
   renderServices();
   renderOthers();
+}
+
+// =========================================================
+// EXCEL DATABASE
+// =========================================================
+const DB_KEY = 'furnitureQuoteHistory';
+
+function getHistory() {
+  try { return JSON.parse(localStorage.getItem(DB_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function updateHistoryCount() {
+  const h = getHistory();
+  const el = document.getElementById('historyCount');
+  const btn = document.getElementById('btn_exportAll');
+  if (!el || !btn) return;
+  if (h.length > 0) {
+    el.textContent = `มีข้อมูล ${h.length} รายการในฐานข้อมูล`;
+    btn.style.display = 'inline-flex';
+  } else {
+    el.textContent = '';
+    btn.style.display = 'none';
+  }
+}
+
+async function saveQuote() {
+  const q = window._lastQuote;
+  if (!q) { alert('กรุณาคำนวณราคาก่อนบันทึก'); return; }
+  if (q.productName === '(ไม่ระบุชื่อ)' && q.customerName === '(ไม่ระบุลูกค้า)') {
+    if (!confirm('ยังไม่ได้กรอกชื่อสินค้าและลูกค้า ต้องการบันทึกต่อหรือไม่?')) return;
+  }
+  const history = getHistory();
+  history.unshift(q);
+  localStorage.setItem(DB_KEY, JSON.stringify(history));
+  await exportToExcel(history, true);
+  updateHistoryCount();
+}
+
+async function exportHistory() {
+  const history = getHistory();
+  if (history.length === 0) { alert('ยังไม่มีข้อมูลในฐานข้อมูล'); return; }
+  await exportToExcel(history, false);
+}
+
+async function exportToExcel(records, isSave) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Furniture Price Calculator';
+
+  // ── colour palette ──
+  const C = {
+    navyBg:   { type:'pattern', pattern:'solid', fgColor:{ argb:'FF1A3A5C' } },
+    blueBg:   { type:'pattern', pattern:'solid', fgColor:{ argb:'FF2A5F8F' } },
+    lightBlu: { type:'pattern', pattern:'solid', fgColor:{ argb:'FFE3F2FD' } },
+    sectionBg:{ type:'pattern', pattern:'solid', fgColor:{ argb:'FFE8EEF4' } },
+    summaryBg:{ type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFF3E0' } },
+    greenBg:  { type:'pattern', pattern:'solid', fgColor:{ argb:'FFE8F5E9' } },
+    grandBg:  { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFF8E1' } },
+    white:    { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFFFFF' } },
+    gray:     { type:'pattern', pattern:'solid', fgColor:{ argb:'FFF5F5F5' } },
+  };
+  const numFmt = '#,##0.00';
+  const numFmtInt = '#,##0';
+
+  function applyFill(row, fill, cols) {
+    cols.forEach(c => { row.getCell(c).fill = fill; });
+  }
+  function applyFont(row, font, cols) {
+    cols.forEach(c => { row.getCell(c).font = font; });
+  }
+  function applyAlign(row, align, cols) {
+    cols.forEach(c => { row.getCell(c).alignment = align; });
+  }
+  function applyBorder(row, cols) {
+    const b = { style:'thin', color:{ argb:'FFD0D9E3' } };
+    cols.forEach(c => {
+      row.getCell(c).border = { top:b, left:b, bottom:b, right:b };
+    });
+  }
+
+  // ════════════════════════════════════════════
+  //  SHEET 1 — ใบประเมินราคา (แนวตั้ง)
+  // ════════════════════════════════════════════
+  const ws1 = wb.addWorksheet('Detail');
+  ws1.columns = [ {width:38}, {width:40}, {width:16} ];
+
+  records.forEach((q, qi) => {
+    if (qi > 0) { ws1.addRow([]); ws1.addRow([]); }
+
+    // ── title ──
+    const tRow = ws1.addRow([`  ใบประเมินราคา ${qi + 1}`]);
+    ws1.mergeCells(tRow.number, 1, tRow.number, 3);
+    tRow.height = 24;
+    applyFill(tRow, C.navyBg, [1]);
+    applyFont(tRow, { bold:true, color:{ argb:'FFFFFFFF' }, size:12 }, [1]);
+
+    // ── info ──
+    const info = [
+      ['วันที่', q.date],
+      ['ชื่อสินค้า', q.productName],
+      ['ประเภทสินค้า', q.productType||'-'],
+      ['ลูกค้า', q.customerName],
+      ['ประเภทงาน', q.jobType==='oem'?'OEM':'In-house'],
+      ['จำนวน (ชิ้น)', q.qty],
+    ];
+    info.forEach(([lbl, val]) => {
+      const r = ws1.addRow([`  ${lbl}`, '', val]);
+      r.getCell(1).font = { bold:true, size:10, color:{ argb:'FF1A3A5C' } };
+      r.getCell(3).alignment = { horizontal: typeof val==='number'?'right':'left' };
+      applyBorder(r, [1,2,3]);
+    });
+
+    ws1.addRow([]);
+
+    // ── column headers ──
+    const hRow = ws1.addRow(['  รายการ', 'รายละเอียด / สูตร', 'ราคา (฿/ชิ้น)']);
+    hRow.height = 20;
+    applyFill(hRow, C.blueBg, [1,2,3]);
+    applyFont(hRow, { bold:true, color:{ argb:'FFFFFFFF' }, size:10 }, [1,2,3]);
+    applyAlign(hRow, { horizontal:'center', vertical:'middle' }, [1,2,3]);
+    applyBorder(hRow, [1,2,3]);
+
+    // ── วัสดุ ──
+    const mSec = ws1.addRow(['  วัสดุ']);
+    ws1.mergeCells(mSec.number, 1, mSec.number, 3);
+    applyFill(mSec, C.sectionBg, [1]);
+    applyFont(mSec, { bold:true, italic:true, color:{ argb:'FF1A3A5C' }, size:10 }, [1]);
+
+    (q.matBreakdown||[]).forEach(b => {
+      const r = ws1.addRow([`  ${b.name}`, b.formula, Math.round(b.cost*100)/100]);
+      r.getCell(3).numFmt = numFmt;
+      r.getCell(3).alignment = { horizontal:'right' };
+      applyBorder(r, [1,2,3]);
+    });
+
+    const mTot = ws1.addRow(['  รวมต้นทุนวัสดุ', '', Math.round(q.matCost*100)/100]);
+    applyFill(mTot, C.lightBlu, [1,2,3]);
+    applyFont(mTot, { bold:true, size:10 }, [1,2,3]);
+    mTot.getCell(3).numFmt = numFmt;
+    mTot.getCell(3).alignment = { horizontal:'right' };
+    applyBorder(mTot, [1,2,3]);
+
+    ws1.addRow([]);
+
+    // ── ค่าบริการ ──
+    const sSec = ws1.addRow(['  ค่าบริการ / ค่าแรง']);
+    ws1.mergeCells(sSec.number, 1, sSec.number, 3);
+    applyFill(sSec, C.sectionBg, [1]);
+    applyFont(sSec, { bold:true, italic:true, color:{ argb:'FF1A3A5C' }, size:10 }, [1]);
+
+    (q.svcBreakdown||[]).forEach(b => {
+      let detail = '';
+      if (b.polishType && b.polishRate && b.polishAreaSqm) {
+        detail = `${b.polishRate} B/m2 x ${(+b.polishAreaSqm).toFixed(4)} m2 (${b.sides||2} sides)`;
+      } else if (b.qty > 1) {
+        detail = `${b.unitPrice} x ${b.qty} ${b.unit||''}`;
+      }
+      const r = ws1.addRow([`  ${b.name}`, detail, Math.round(b.cost*100)/100]);
+      r.getCell(3).numFmt = numFmt;
+      r.getCell(3).alignment = { horizontal:'right' };
+      applyBorder(r, [1,2,3]);
+    });
+
+    const sTot = ws1.addRow(['  รวมค่าบริการ', '', Math.round(q.svcCost*100)/100]);
+    applyFill(sTot, C.lightBlu, [1,2,3]);
+    applyFont(sTot, { bold:true, size:10 }, [1,2,3]);
+    sTot.getCell(3).numFmt = numFmt;
+    sTot.getCell(3).alignment = { horizontal:'right' };
+    applyBorder(sTot, [1,2,3]);
+
+    // ── อุปกรณ์อื่นๆ ──
+    if ((q.otherBreakdown||[]).length > 0) {
+      ws1.addRow([]);
+      const oSec = ws1.addRow(['  อุปกรณ์อื่นๆ']);
+      ws1.mergeCells(oSec.number, 1, oSec.number, 3);
+      applyFill(oSec, C.sectionBg, [1]);
+      applyFont(oSec, { bold:true, italic:true, color:{ argb:'FF1A3A5C' }, size:10 }, [1]);
+      q.otherBreakdown.forEach(b => {
+        const r = ws1.addRow([`  ${b.name}`, '', Math.round(b.cost*100)/100]);
+        r.getCell(3).numFmt = numFmt;
+        r.getCell(3).alignment = { horizontal:'right' };
+        applyBorder(r, [1,2,3]);
+      });
+      const oTot = ws1.addRow(['  รวมอุปกรณ์อื่นๆ', '', Math.round(q.otherCost*100)/100]);
+      applyFill(oTot, C.lightBlu, [1,2,3]);
+      applyFont(oTot, { bold:true, size:10 }, [1,2,3]);
+      oTot.getCell(3).numFmt = numFmt;
+      oTot.getCell(3).alignment = { horizontal:'right' };
+      applyBorder(oTot, [1,2,3]);
+    }
+
+    // ── สรุป ──
+    ws1.addRow([]);
+    const sumSec = ws1.addRow(['  สรุป']);
+    ws1.mergeCells(sumSec.number, 1, sumSec.number, 3);
+    applyFill(sumSec, C.summaryBg, [1]);
+    applyFont(sumSec, { bold:true, italic:true, color:{ argb:'FF1A3A5C' }, size:10 }, [1]);
+
+    const summaryLines = [
+      ['  รวมต้นทุน/ชิ้น', '', Math.round(q.costPerUnit*100)/100, C.lightBlu],
+      [`  x ${q.qty} ชิ้น = ต้นทุนรวม`, '', Math.round(q.totalCost*100)/100, C.white],
+      [`  Markup ${q.markupPct}% = กำไร`, '', Math.round(q.profit*100)/100, C.greenBg],
+      ['  ราคาขาย/ชิ้น', '', Math.round(q.sellPerUnit*100)/100, C.summaryBg],
+    ];
+    summaryLines.forEach(([lbl, d, val, fill]) => {
+      const r = ws1.addRow([lbl, d, val]);
+      applyFill(r, fill, [1,2,3]);
+      applyFont(r, { bold:true, size:10 }, [1,2,3]);
+      r.getCell(3).numFmt = numFmt;
+      r.getCell(3).alignment = { horizontal:'right' };
+      applyBorder(r, [1,2,3]);
+    });
+
+    // grand total
+    const gRow = ws1.addRow([`  ราคาขายรวม (${q.qty} ชิ้น)`, '', Math.round(q.totalSell*100)/100]);
+    gRow.height = 22;
+    applyFill(gRow, C.grandBg, [1,2,3]);
+    applyFont(gRow, { bold:true, color:{ argb:'FFB87000' }, size:13 }, [1,2,3]);
+    gRow.getCell(3).numFmt = numFmt;
+    gRow.getCell(3).alignment = { horizontal:'right' };
+    applyBorder(gRow, [1,2,3]);
+
+    if (q.singlePremium > 0) {
+      const spRow = ws1.addRow([`  ราคาสั่งเดี่ยว (+${q.singlePremium} premium)`, '', Math.round(q.singlePrice*100)/100]);
+      applyFont(spRow, { bold:true, size:10, color:{ argb:'FF2E7D32' } }, [1,2,3]);
+      spRow.getCell(3).numFmt = numFmt;
+      spRow.getCell(3).alignment = { horizontal:'right' };
+      applyBorder(spRow, [1,2,3]);
+    }
+  });
+
+  // ════════════════════════════════════════════
+  //  SHEET 2 — สรุปทั้งหมด (แนวนอน)
+  // ════════════════════════════════════════════
+  const ws2 = wb.addWorksheet('Summary');
+  ws2.columns = [
+    { header:'วันที่',           width:14 },
+    { header:'ชื่อสินค้า',       width:22 },
+    { header:'ลูกค้า',           width:18 },
+    { header:'ประเภทสินค้า',     width:16 },
+    { header:'จำนวน',           width: 8 },
+    { header:'ทุนวัสดุ/ชิ้น',   width:14 },
+    { header:'ค่าบริการ/ชิ้น',  width:14 },
+    { header:'ทุนรวม/ชิ้น',     width:14 },
+    { header:'Markup%',         width:10 },
+    { header:'ราคาขาย/ชิ้น',   width:14 },
+    { header:'ราคาขายรวม',      width:14 },
+    { header:'กำไรรวม',         width:12 },
+  ];
+  const hdr2 = ws2.getRow(1);
+  hdr2.height = 22;
+  for (let c = 1; c <= 12; c++) {
+    hdr2.getCell(c).fill = C.navyBg;
+    hdr2.getCell(c).font = { bold:true, color:{ argb:'FFFFFFFF' }, size:10 };
+    hdr2.getCell(c).alignment = { horizontal:'center', vertical:'middle' };
+  }
+  records.forEach((q, qi) => {
+    const r = ws2.addRow([
+      q.date, q.productName, q.customerName, q.productType||'-', q.qty,
+      Math.round(q.matCost), Math.round(q.svcCost), Math.round(q.costPerUnit),
+      q.markupPct, Math.round(q.sellPerUnit), Math.round(q.totalSell), Math.round(q.profit),
+    ]);
+    const fill = qi%2===0 ? C.white : C.gray;
+    for (let c = 1; c <= 12; c++) {
+      r.getCell(c).fill = fill;
+      r.getCell(c).border = { bottom: { style:'thin', color:{ argb:'FFE0E0E0' } } };
+      if (c >= 6) { r.getCell(c).numFmt = numFmtInt; r.getCell(c).alignment = { horizontal:'right' }; }
+    }
+    r.getCell(10).font = { bold:true, color:{ argb:'FFB87000' } };
+    r.getCell(11).font = { bold:true, color:{ argb:'FFB87000' } };
+  });
+
+  // ── download ──
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const dateStr = new Date().toLocaleDateString('en-GB').replace(/\//g,'-');
+  a.href = url;
+  a.download = `furniture-quotes-${dateStr}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  if (isSave) {
+    const h = getHistory();
+    alert(`บันทึกสำเร็จ!\nฐานข้อมูลมีทั้งหมด ${h.length} รายการ\nไฟล์ Excel ดาวน์โหลดแล้ว`);
+  }
 }
 
 // =========================================================
@@ -2032,6 +2387,7 @@ function renderNestArea(surfData, totalPerSet, bestN, mat) {
       finish:   mat ? (mat.finish || mat.grade || '') : '',
       hairline: costHairline,
       scotch:   costScotch,
+      areaSqm:  totalPerSet / 1e6,
     };
 
     html += `
@@ -2084,3 +2440,4 @@ function fmt(n, d=2) {
 </script>
 </body>
 </html>
+
