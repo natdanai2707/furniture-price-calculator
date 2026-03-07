@@ -584,9 +584,7 @@
       <div class="card-header"><span class="icon">🗺️</span> ผังการจัดเรียง (Nesting Layout)</div>
       <div class="card-body">
         <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;">
-          <div style="overflow-x:auto;flex-shrink:0;">
-            <canvas id="nestCanvas" style="border:2px solid var(--border);border-radius:6px;display:block;"></canvas>
-          </div>
+          <div id="nestCanvasContainer" style="overflow-x:auto;flex-shrink:0;display:flex;gap:16px;flex-wrap:wrap;"></div>
           <div id="nest_legend" style="min-width:200px;flex:1;max-width:320px;"></div>
         </div>
       </div>
@@ -904,18 +902,30 @@ function applyNestPolish() {
   const np = nestPolishResult;
 
   // ── 1. ตั้งค่าวัสดุหลักจาก Nesting ──────────────────────
-  if (np.matId && np.bestN > 0) {
+  if (np.matId && (np.bestN > 0 || np.isMultiSheet)) {
     materials = [];
     matIdCounter = 0;
-    materials.push({
-      id:          ++matIdCounter,
-      matId:       np.matId,
-      yield:       np.bestN,
-      sheets:      1,
-      custom:      false,
-      customPrice: 0,
-      remark:      `จาก Nesting (${np.bestN} ชุด/แผ่น)`,
-    });
+    if (np.isMultiSheet) {
+      materials.push({
+        id:          ++matIdCounter,
+        matId:       np.matId,
+        yield:       1,
+        sheets:      np.sheetsNeeded,
+        custom:      false,
+        customPrice: 0,
+        remark:      `จาก Nesting (1 ชุด ต้องใช้ ${np.sheetsNeeded} แผ่น)`,
+      });
+    } else {
+      materials.push({
+        id:          ++matIdCounter,
+        matId:       np.matId,
+        yield:       np.bestN,
+        sheets:      1,
+        custom:      false,
+        customPrice: 0,
+        remark:      `จาก Nesting (${np.bestN} ชุด/แผ่น)`,
+      });
+    }
   }
 
   // ── 2. ตั้งค่าขัดผิวตามประเภทวัสดุ ──────────────────────
@@ -1950,6 +1960,21 @@ function shelfPack(items, sheetW, sheetH, gap, allowRotate) {
   return { placed, unplaced };
 }
 
+// ── Pack 1 set across multiple sheets ─────────────────────
+function packMultiSheet(allPieces, sheetW, sheetH, gap, allowRotate) {
+  const sheets = [];
+  let remaining = [...allPieces];
+  let safety = 0;
+  while (remaining.length > 0 && safety < 50) {
+    safety++;
+    const res = shelfPack(remaining, sheetW, sheetH, gap, allowRotate);
+    if (res.placed.length === 0) break; // stuck — shouldn't happen after individual validation
+    sheets.push(res.placed);
+    remaining = res.unplaced;
+  }
+  return sheets; // array of placed[] — one per sheet
+}
+
 // ── Main nesting runner ────────────────────────────────────
 function runNesting() {
   const matId = document.getElementById('nest_sheet').value;
@@ -1996,12 +2021,20 @@ function runNesting() {
     else break;
   }
 
-  // If 0 sets fit, still show partial (best effort for 1 set)
-  if (bestN === 0) {
-    bestResult = shelfPack(expandPieces(1, dims), dims.w, dims.h, gap, rot);
-  }
+  // ── Multi-sheet mode: 1 ชุดต้องใช้หลายแผ่น ──────────────
+  let isMultiSheet = false;
+  let multiSheets  = [];
+  let sheetsNeeded = 1;
 
-  // Stats for selected sheet
+  if (bestN === 0) {
+    multiSheets  = packMultiSheet(expandPieces(1, dims), dims.w, dims.h, gap, rot);
+    sheetsNeeded = multiSheets.length || 1;
+    isMultiSheet = true;
+    bestResult   = { placed: multiSheets[0] || [], unplaced: [] };
+  }
+  // ─────────────────────────────────────────────────────────
+
+  // Stats for selected sheet (use first sheet for waste %)
   const sheetArea = dims.w * dims.h;
   const usedArea  = bestResult.placed.reduce((s, p) => s + p.w * p.h, 0);
   const wastePct  = (sheetArea - usedArea) / sheetArea * 100;
@@ -2038,10 +2071,12 @@ function runNesting() {
 
   // บันทึกผล Nesting ล่าสุดไว้ใช้ auto-fill Yield ในหน้าเปรียบเทียบ
   lastNestData = {
-    selMatId:  mat.id,
-    selSize:   mat.size,
-    bestN,
-    otherSize: otherDims.label,
+    selMatId:    mat.id,
+    selSize:     mat.size,
+    bestN:       isMultiSheet ? 1 : bestN,
+    sheetsNeeded: isMultiSheet ? sheetsNeeded : 1,
+    isMultiSheet,
+    otherSize:   otherDims.label,
     otherBestN,
     fitsOther,
   };
@@ -2056,22 +2091,44 @@ function runNesting() {
 
   // Render
   document.getElementById('nest_results').style.display = 'block';
-  renderNestStats(bestN, bestResult, sheetArea, usedArea, wastePct, mat, dims, gap, cmpData);
-  renderNestCanvas(bestResult.placed, dims, gap, bestN);
-  renderNestArea(surfData, totalSurfPerSet, bestN, mat);
+  renderNestStats(bestN, bestResult, sheetArea, usedArea, wastePct, mat, dims, gap, cmpData, isMultiSheet, sheetsNeeded, multiSheets);
+  renderNestCanvas(isMultiSheet ? multiSheets : [bestResult.placed], dims, gap, bestN, isMultiSheet, sheetsNeeded);
+  renderNestArea(surfData, totalSurfPerSet, isMultiSheet ? 1 : bestN, mat, isMultiSheet, sheetsNeeded);
   setTimeout(() => document.getElementById('nest_results').scrollIntoView({ behavior:'smooth', block:'start' }), 50);
 }
 
 // ── Stats panel ──────────────────────────────────────────
-function renderNestStats(bestN, result, sheetArea, usedArea, wastePct, mat, dims, gap, cmp) {
+function renderNestStats(bestN, result, sheetArea, usedArea, wastePct, mat, dims, gap, cmp, isMultiSheet, sheetsNeeded, multiSheets) {
   const unplacedCount = result.unplaced.length;
-  let html = `
+
+  // Multi-sheet summary banner
+  let multiSheetBanner = '';
+  if (isMultiSheet) {
+    const totalUsed = (multiSheets||[]).reduce((s, placed) =>
+      s + placed.reduce((ss, p) => ss + p.w * p.h, 0), 0);
+    const totalSheetArea = sheetArea * sheetsNeeded;
+    const totalWaste = (totalSheetArea - totalUsed) / totalSheetArea * 100;
+    multiSheetBanner = `
+    <div style="background:#fff3e0;border:2px solid #ff9800;border-radius:10px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+      <span style="font-size:32px;">📦</span>
+      <div>
+        <div style="font-size:16px;font-weight:800;color:#e65100;">โหมด Multi-Sheet: 1 ชุดเฟอร์นิเจอร์ต้องใช้ <span style="font-size:24px;">${sheetsNeeded}</span> แผ่น</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:3px;">
+          ชิ้นงานทั้งหมดไม่สามารถจัดลงแผ่นเดียวได้ — ระบบแจกแจงการตัดออกเป็น ${sheetsNeeded} แผ่น
+          &nbsp;|&nbsp; เศษวัสดุรวม ${totalWaste.toFixed(1)}%
+          &nbsp;|&nbsp; ราคาวัสดุต่อชุด = <b>฿${fmt(mat.price * sheetsNeeded)}</b>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  let html = multiSheetBanner + `
     <div class="result-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px;">
       <div class="result-box">
-        <div class="label">Yield — ตัดได้</div>
-        <div class="value" style="font-size:32px;">${bestN > 0 ? bestN : '—'}</div>
-        <div style="font-size:13px;color:var(--muted);">ชุด / แผ่น</div>
-        ${bestN === 0 ? '<div style="font-size:12px;color:#e65100;margin-top:4px;">ไม่สามารถใส่ครบ 1 ชุดได้</div>' : ''}
+        <div class="label">${isMultiSheet ? 'แผ่นที่ต้องใช้' : 'Yield — ตัดได้'}</div>
+        <div class="value" style="font-size:32px;color:${isMultiSheet?'#e65100':'inherit'};">${isMultiSheet ? sheetsNeeded : (bestN > 0 ? bestN : '—')}</div>
+        <div style="font-size:13px;color:var(--muted);">${isMultiSheet ? 'แผ่น / ชุด' : 'ชุด / แผ่น'}</div>
+        ${!isMultiSheet && bestN === 0 ? '<div style="font-size:12px;color:#e65100;margin-top:4px;">ไม่สามารถใส่ครบ 1 ชุดได้</div>' : ''}
       </div>
       <div class="result-box">
         <div class="label">เศษวัสดุ (Waste)</div>
@@ -2098,7 +2155,13 @@ function renderNestStats(bestN, result, sheetArea, usedArea, wastePct, mat, dims
     </div>`;
   }
 
-  if (bestN > 0) {
+  if (isMultiSheet) {
+    html += `<div class="qty-calc" style="background:#fff3e0;border-color:#ff9800;">
+      📦 1 ชุดเฟอร์นิเจอร์ ต้องใช้ <b>${sheetsNeeded} แผ่น</b>
+      &nbsp;|&nbsp; ราคาวัสดุต่อชุด = <b>฿${fmt(mat.price * sheetsNeeded)}</b>
+      &nbsp;|&nbsp; ดูผัง <b>${sheetsNeeded} แผ่น</b> ด้านล่าง
+    </div>`;
+  } else if (bestN > 0) {
     html += `<div class="qty-calc">
       ✅ 1 แผ่น ตัดได้ <b>${bestN} ชุด</b>เฟอร์นิเจอร์
       &nbsp;|&nbsp; Yield = <b>${bestN}</b> ชิ้น/แผ่น
@@ -2192,120 +2255,139 @@ function renderNestStats(bestN, result, sheetArea, usedArea, wastePct, mat, dims
 }
 
 // ── Canvas renderer ──────────────────────────────────────
-function renderNestCanvas(placed, dims, gap, bestN) {
-  const canvas = document.getElementById('nestCanvas');
-  const maxW = 680, maxH = 1100;
+function renderNestCanvas(sheetsArray, dims, gap, bestN, isMultiSheet, sheetsNeeded) {
+  const container = document.getElementById('nestCanvasContainer');
+  container.innerHTML = '';
+  const maxW = Math.min(680, (window.innerWidth || 800) - 48);
+  const maxH = 1100;
   const scale = Math.min(maxW / dims.w, maxH / dims.h);
-  canvas.width  = Math.round(dims.w * scale);
-  canvas.height = Math.round(dims.h * scale);
 
-  const ctx = canvas.getContext('2d');
+  sheetsArray.forEach((placed, sheetIdx) => {
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;';
 
-  // Sheet background
-  ctx.fillStyle = '#dce8f0';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // Sheet border
-  ctx.strokeStyle = '#1a3a5c';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
-
-  // Gap boundary (dashed)
-  const gPx = Math.round(gap * scale);
-  ctx.strokeStyle = '#94a3b8';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([4, 3]);
-  ctx.strokeRect(gPx, gPx, canvas.width - 2*gPx, canvas.height - 2*gPx);
-  ctx.setLineDash([]);
-
-  // Assign set-level shading (slightly different shade per set)
-  const setAlphas = [0.88, 0.72, 0.60, 0.50, 0.42];
-
-  placed.forEach(p => {
-    const x = Math.round(p.x * scale);
-    const y = Math.round(p.y * scale);
-    const w = Math.round(p.w * scale);
-    const h = Math.round(p.h * scale);
-    const alpha = bestN > 1 ? (setAlphas[p.setIdx % setAlphas.length] || 0.4) : 0.88;
-    const isCirc = p.shape === 'circle';
-
-    // Fill
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = p.color;
-    if (isCirc) {
-      ctx.beginPath();
-      ctx.ellipse(x + w/2, y + h/2, w/2, h/2, 0, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.fillRect(x, y, w, h);
+    if (isMultiSheet) {
+      const lbl = document.createElement('div');
+      lbl.style.cssText = 'font-weight:700;font-size:13px;color:var(--primary);padding:4px 14px;background:#e3f2fd;border-radius:6px;border:1.5px solid #90caf9;';
+      lbl.textContent = `แผ่นที่ ${sheetIdx + 1} / ${sheetsNeeded}`;
+      wrapper.appendChild(lbl);
     }
 
-    // Border
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'border:2px solid var(--border);border-radius:6px;display:block;max-width:100%;';
+    canvas.width  = Math.round(dims.w * scale);
+    canvas.height = Math.round(dims.h * scale);
+    wrapper.appendChild(canvas);
+    container.appendChild(wrapper);
+
+    const ctx = canvas.getContext('2d');
+
+    // Sheet background
+    ctx.fillStyle = '#dce8f0';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Sheet border
+    ctx.strokeStyle = '#1a3a5c';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+
+    // Gap boundary (dashed)
+    const gPx = Math.round(gap * scale);
+    ctx.strokeStyle = '#94a3b8';
     ctx.lineWidth = 1;
-    if (isCirc) {
-      ctx.beginPath();
-      ctx.ellipse(x + w/2, y + h/2, w/2, h/2, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      // Bounding-box dashed outline to show packing grid
-      ctx.setLineDash([2, 2]);
-      ctx.strokeStyle = 'rgba(0,0,0,0.12)';
-      ctx.strokeRect(x, y, w, h);
-      ctx.setLineDash([]);
-    } else {
-      ctx.strokeRect(x, y, w, h);
-    }
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(gPx, gPx, canvas.width - 2*gPx, canvas.height - 2*gPx);
+    ctx.setLineDash([]);
 
-    // Label inside piece (if large enough)
-    if (w >= 22 && h >= 14) {
-      const fs = Math.max(7, Math.min(11, Math.floor(Math.min(w, h) * 0.22)));
-      ctx.font = `600 ${fs}px Arial`;
-      ctx.fillStyle = 'rgba(0,0,0,0.75)';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const cx = x + w / 2, cy = y + h / 2;
-      const label = p.name.length > 12 ? p.name.slice(0, 12) : p.name;
-      ctx.fillText(label, cx, cy - (h >= fs * 2.5 ? fs * 0.55 : 0));
-      if (w >= 40 && h >= fs * 2.8) {
-        ctx.font = `${Math.max(6, fs - 1)}px Arial`;
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        const dimLabel = isCirc ? `Ø${p.diameter}` : (p.rotated ? p.h+'×'+p.w : p.w+'×'+p.h);
-        ctx.fillText(dimLabel, cx, cy + fs * 0.85);
+    // Assign set-level shading (slightly different shade per set)
+    const setAlphas = [0.88, 0.72, 0.60, 0.50, 0.42];
+
+    placed.forEach(p => {
+      const x = Math.round(p.x * scale);
+      const y = Math.round(p.y * scale);
+      const w = Math.round(p.w * scale);
+      const h = Math.round(p.h * scale);
+      const alpha = bestN > 1 ? (setAlphas[p.setIdx % setAlphas.length] || 0.4) : 0.88;
+      const isCirc = p.shape === 'circle';
+
+      // Fill
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      if (isCirc) {
+        ctx.beginPath();
+        ctx.ellipse(x + w/2, y + h/2, w/2, h/2, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillRect(x, y, w, h);
       }
-    }
 
-    // Rotation badge (rects only)
-    if (!isCirc && p.rotated && w >= 12 && h >= 12) {
-      ctx.font = `${Math.max(7, Math.min(10, Math.floor(Math.min(w, h) * 0.28)))}px Arial`;
-      ctx.fillStyle = 'rgba(0,0,0,0.45)';
-      ctx.textAlign = 'right'; ctx.textBaseline = 'top';
-      ctx.fillText('↻', x + w - 2, y + 2);
-    }
+      // Border
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.lineWidth = 1;
+      if (isCirc) {
+        ctx.beginPath();
+        ctx.ellipse(x + w/2, y + h/2, w/2, h/2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([2, 2]);
+        ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+        ctx.strokeRect(x, y, w, h);
+        ctx.setLineDash([]);
+      } else {
+        ctx.strokeRect(x, y, w, h);
+      }
+
+      // Label inside piece (if large enough)
+      if (w >= 22 && h >= 14) {
+        const fs = Math.max(7, Math.min(11, Math.floor(Math.min(w, h) * 0.22)));
+        ctx.font = `600 ${fs}px Arial`;
+        ctx.fillStyle = 'rgba(0,0,0,0.75)';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const cx = x + w / 2, cy = y + h / 2;
+        const label = p.name.length > 12 ? p.name.slice(0, 12) : p.name;
+        ctx.fillText(label, cx, cy - (h >= fs * 2.5 ? fs * 0.55 : 0));
+        if (w >= 40 && h >= fs * 2.8) {
+          ctx.font = `${Math.max(6, fs - 1)}px Arial`;
+          ctx.fillStyle = 'rgba(0,0,0,0.5)';
+          const dimLabel = isCirc ? `Ø${p.diameter}` : (p.rotated ? p.h+'×'+p.w : p.w+'×'+p.h);
+          ctx.fillText(dimLabel, cx, cy + fs * 0.85);
+        }
+      }
+
+      // Rotation badge (rects only)
+      if (!isCirc && p.rotated && w >= 12 && h >= 12) {
+        ctx.font = `${Math.max(7, Math.min(10, Math.floor(Math.min(w, h) * 0.28)))}px Arial`;
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+        ctx.fillText('↻', x + w - 2, y + 2);
+      }
+    });
+
+    // Scale bar
+    const sbMM = dims.w >= 1500 ? 300 : 200;
+    const sbPx = sbMM * scale;
+    const sbX = 10, sbY = canvas.height - 20;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(sbX, sbY + 5, sbPx, 3);
+    ctx.fillRect(sbX, sbY, 2, 13);
+    ctx.fillRect(sbX + sbPx - 2, sbY, 2, 13);
+    ctx.font = '10px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.fillText(`${sbMM} mm`, sbX + sbPx / 2, sbY - 1);
+
+    // Sheet size label
+    ctx.fillStyle = 'rgba(26,58,92,0.85)';
+    ctx.font = 'bold 11px Arial'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(`${dims.w}×${dims.h} mm`, 6, 4);
   });
 
-  // Scale bar
-  const sbMM = dims.w >= 1500 ? 300 : 200;
-  const sbPx = sbMM * scale;
-  const sbX = 10, sbY = canvas.height - 20;
-  ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  ctx.fillRect(sbX, sbY + 5, sbPx, 3);
-  ctx.fillRect(sbX, sbY, 2, 13);
-  ctx.fillRect(sbX + sbPx - 2, sbY, 2, 13);
-  ctx.font = '10px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-  ctx.fillText(`${sbMM} mm`, sbX + sbPx / 2, sbY - 1);
-
-  // Sheet size label
-  ctx.fillStyle = 'rgba(26,58,92,0.85)';
-  ctx.font = 'bold 11px Arial'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-  ctx.fillText(`${dims.w}×${dims.h} mm`, 6, 4);
-
-  // Legend
-  renderNestLegend(placed, bestN);
+  // Legend (combine all placed pieces from all sheets)
+  const allPlaced = sheetsArray.flat();
+  renderNestLegend(allPlaced, bestN, isMultiSheet, sheetsNeeded);
 }
 
 // ── Legend ───────────────────────────────────────────────
-function renderNestLegend(placed, bestN) {
+function renderNestLegend(placed, bestN, isMultiSheet, sheetsNeeded) {
   const pieceMap = new Map();
   placed.forEach(p => { if (!pieceMap.has(p.id)) pieceMap.set(p.id, p); });
 
@@ -2314,13 +2396,16 @@ function renderNestLegend(placed, bestN) {
   nestPieces.forEach((np, idx) => {
     const color = PIECE_COLORS[idx % PIECE_COLORS.length];
     const placedCount = placed.filter(p => p.id === np.id).length;
+    const countLabel = isMultiSheet
+      ? `${placedCount} ชิ้น ใน ${sheetsNeeded} แผ่น`
+      : `${placedCount} ชิ้น (${bestN} ชุด)`;
     html += `
       <div style="display:flex;align-items:flex-start;gap:9px;margin-bottom:10px;">
         <div style="width:18px;height:18px;min-width:18px;background:${color};border-radius:${np.shape==='circle'?'50%':'3px'};border:1px solid rgba(0,0,0,0.2);margin-top:1px;"></div>
         <div>
           <div style="font-weight:600;font-size:13px;">${np.name}</div>
           <div style="font-size:12px;color:var(--muted);">${np.shape==='circle'?`Ø${np.diameter} mm (วงกลม)`:np.w+'×'+np.h+' mm'} · ${np.qty} ชิ้น/ชุด</div>
-          <div style="font-size:12px;color:var(--primary);">จัดเรียงได้ ${placedCount} ชิ้น (${bestN} ชุด)</div>
+          <div style="font-size:12px;color:var(--primary);">จัดเรียงได้ ${countLabel}</div>
         </div>
       </div>`;
   });
@@ -2343,7 +2428,7 @@ function renderNestLegend(placed, bestN) {
 }
 
 // ── Surface area panel ───────────────────────────────────
-function renderNestArea(surfData, totalPerSet, bestN, mat) {
+function renderNestArea(surfData, totalPerSet, bestN, mat, isMultiSheet, sheetsNeeded) {
   let html = `
     <table style="margin-bottom:14px;">
       <thead><tr>
@@ -2351,93 +2436,4 @@ function renderNestArea(surfData, totalPerSet, bestN, mat) {
         <th class="td-center">ขนาด (mm)</th>
         <th class="td-center">จำนวน/ชุด</th>
         <th class="td-num">พื้นที่ 1 ด้าน (ตร.ม.)</th>
-        <th class="td-num">2 ด้าน × 1 ชิ้น</th>
-        <th class="td-num">2 ด้าน × ทั้งชุด</th>
-      </tr></thead><tbody>`;
-
-  surfData.forEach(s => {
-    const dimLabel = s.shape === 'circle' ? `Ø${s.diameter} mm (วงกลม)` : `${s.w} × ${s.h}`;
-    const oneSideArea = s.areaSingle / 2;
-    html += `<tr>
-      <td><b>${s.name}</b></td>
-      <td class="td-center">${dimLabel}</td>
-      <td class="td-center">${s.qty} ชิ้น</td>
-      <td class="td-num">${(oneSideArea / 1e6).toFixed(6)}</td>
-      <td class="td-num">${(s.areaSingle / 1e6).toFixed(6)}</td>
-      <td class="td-num"><b>${(s.areaSet / 1e6).toFixed(6)}</b></td>
-    </tr>`;
-  });
-
-  html += `</tbody></table>
-    <div class="breakdown-row total">
-      <span>พื้นที่ผิว 2 ด้าน รวม 1 ชุด</span>
-      <span class="amount">${(totalPerSet / 1e6).toFixed(4)} ตร.ม.</span>
-    </div>`;
-
-  if (bestN > 0) {
-    const totalSheetArea = totalPerSet * bestN / 1e6;
-    const costHairline   = totalPerSet / 1e6 * POLISH_RATE.Stainless; // 400 ฿/sqm
-    const costScotch     = totalPerSet / 1e6 * POLISH_RATE.Aluminum;  // 300 ฿/sqm
-
-    // Store result for linking to Calc page
-    nestPolishResult = {
-      matType:  mat ? mat.type              : 'Unknown',
-      matId:    mat ? mat.id                : null,
-      bestN:    bestN,
-      finish:   mat ? (mat.finish || mat.grade || '') : '',
-      hairline: costHairline,
-      scotch:   costScotch,
-      areaSqm:  totalPerSet / 1e6,
-    };
-
-    html += `
-      <div class="breakdown-row" style="color:var(--primary-light);">
-        <span>× ${bestN} ชุด/แผ่น = พื้นที่ผิวทั้งแผ่น</span>
-        <span class="amount">${totalSheetArea.toFixed(4)} ตร.ม.</span>
-      </div>
-      <hr class="divider">
-      <div class="section-title" style="margin-top:12px;">ประมาณค่าขัด/ทำผิว (ต่อ 1 ชุด)</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px;">
-        <div style="background:#e3f2fd;border-radius:8px;padding:12px;">
-          <div style="font-size:12px;font-weight:700;color:#1565c0;margin-bottom:4px;">ขัดแฮร์ไลน์ Stainless (฿${POLISH_RATE.Stainless}/ตร.ม.)</div>
-          <div style="font-size:18px;font-weight:800;color:#1565c0;">฿${fmt(costHairline)}</div>
-          <div style="font-size:11px;color:var(--muted);">ต่อ 1 ชุด</div>
-        </div>
-        <div style="background:#e8f5e9;border-radius:8px;padding:12px;">
-          <div style="font-size:12px;font-weight:700;color:var(--success);margin-bottom:4px;">ขัดสก็อตไบร์ท Aluminum (฿${POLISH_RATE.Aluminum}/ตร.ม.)</div>
-          <div style="font-size:18px;font-weight:800;color:var(--success);">฿${fmt(costScotch)}</div>
-          <div style="font-size:11px;color:var(--muted);">ต่อ 1 ชุด</div>
-        </div>
-        <div style="background:#fff3e0;border-radius:8px;padding:12px;">
-          <div style="font-size:12px;font-weight:700;color:var(--accent);margin-bottom:4px;">พื้นที่ผิวรวม</div>
-          <div style="font-size:18px;font-weight:800;color:var(--accent);">${(totalPerSet/1e6).toFixed(4)} ตร.ม.</div>
-          <div style="font-size:11px;color:var(--muted);">2 ด้าน · ต่อ 1 ชุด</div>
-        </div>
-      </div>
-      <div style="margin-top:16px;background:#e8f5e9;border:1.5px solid #81c784;border-radius:8px;padding:12px 16px;">
-        <div style="font-size:13px;font-weight:700;color:var(--success);margin-bottom:8px;">✅ พร้อมโยงผลไปหน้าคำนวณราคา</div>
-        <div style="font-size:12px;color:var(--text);margin-bottom:10px;display:flex;flex-direction:column;gap:3px;">
-          <span>📦 วัสดุ: <b>${mat ? mat.type+' '+mat.size+' '+mat.thick+'mm' : ''}</b></span>
-          <span>✂️ Yield: <b>${bestN} ชุด/แผ่น</b> (จะใส่ใน "ตัดได้" อัตโนมัติ)</span>
-          <span>✨ ค่า${mat && mat.type==='Aluminum'?'ขัดสก็อตไบร์ท':'ขัดแฮร์ไลน์'}: <b>฿${fmt(mat && mat.type==='Aluminum'?costScotch:costHairline)}/ชุด</b> (เปิดใช้งานอัตโนมัติ)</span>
-        </div>
-        <button class="btn btn-success no-print" style="padding:10px 22px;font-size:14px;" onclick="applyNestPolish()">
-          🚀 ส่งทั้งหมดไปหน้าคำนวณราคา
-        </button>
-      </div>`;
-  }
-
-  document.getElementById('nest_areaContent').innerHTML = html;
-}
-
-// =========================================================
-// UTILS
-// =========================================================
-function fmt(n, d=2) {
-  if (isNaN(n)) return '0.00';
-  return parseFloat(n).toLocaleString('th-TH', { minimumFractionDigits: d, maximumFractionDigits: d });
-}
-</script>
-</body>
-</html>
-
+        <th class="td-num">2 ด้าน × 1 ชิ้น</
