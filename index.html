@@ -1960,6 +1960,65 @@ function shelfPack(items, sheetW, sheetH, gap, allowRotate) {
   return { placed, unplaced };
 }
 
+// ── Guillotine bin packing (used for multi-sheet) ─────────
+// Tracks free rectangles and splits them after each placement,
+// allowing pieces to fill gaps alongside tall items.
+function guillotinePack(items, sheetW, sheetH, gap, allowRotate) {
+  const placed = [], unplaced = [];
+
+  // Sort: largest area first for best utilisation
+  const sorted = [...items].sort((a, b) => (b.w * b.h) - (a.w * a.h));
+
+  // Initial free region (inset by gap on all sides)
+  let freeRects = [{ x: gap, y: gap, w: sheetW - 2*gap, h: sheetH - 2*gap }];
+
+  for (const item of sorted) {
+    const orientations = [{ w: item.w, h: item.h, rot: false }];
+    if (allowRotate && item.shape !== 'circle' && item.w !== item.h)
+      orientations.push({ w: item.h, h: item.w, rot: true });
+
+    let best = null;
+
+    for (const ori of orientations) {
+      const pw = ori.w, ph = ori.h;
+      for (let i = 0; i < freeRects.length; i++) {
+        const fr = freeRects[i];
+        if (pw <= fr.w && ph <= fr.h) {
+          // Best-area-fit: prefer rect that wastes least area
+          const score = fr.w * fr.h - pw * ph;
+          if (!best || score < best.score) {
+            best = { score, ori, idx: i, fr };
+          }
+        }
+      }
+    }
+
+    if (best) {
+      const { ori, idx, fr } = best;
+      const pw = ori.w, ph = ori.h;
+      placed.push({ ...item, x: fr.x, y: fr.y, w: pw, h: ph, rotated: ori.rot });
+      freeRects.splice(idx, 1);
+
+      // Right remainder (same height as placed item)
+      if (fr.w - pw - gap >= gap) {
+        freeRects.push({ x: fr.x + pw + gap, y: fr.y, w: fr.w - pw - gap, h: ph });
+      }
+      // Bottom remainder (full width of original free rect)
+      if (fr.h - ph - gap >= gap) {
+        freeRects.push({ x: fr.x, y: fr.y + ph + gap, w: fr.w, h: fr.h - ph - gap });
+      }
+      // Also keep right-full-height: allows stacking items in unused column above right remainder
+      if (fr.w - pw - gap >= gap && fr.h - ph - gap >= gap) {
+        freeRects.push({ x: fr.x + pw + gap, y: fr.y + ph + gap, w: fr.w - pw - gap, h: fr.h - ph - gap });
+      }
+    } else {
+      unplaced.push(item);
+    }
+  }
+
+  return { placed, unplaced };
+}
+
 // ── Pack 1 set across multiple sheets ─────────────────────
 function packMultiSheet(allPieces, sheetW, sheetH, gap, allowRotate) {
   const sheets = [];
@@ -1967,8 +2026,8 @@ function packMultiSheet(allPieces, sheetW, sheetH, gap, allowRotate) {
   let safety = 0;
   while (remaining.length > 0 && safety < 50) {
     safety++;
-    const res = shelfPack(remaining, sheetW, sheetH, gap, allowRotate);
-    if (res.placed.length === 0) break; // stuck — shouldn't happen after individual validation
+    const res = guillotinePack(remaining, sheetW, sheetH, gap, allowRotate);
+    if (res.placed.length === 0) break;
     sheets.push(res.placed);
     remaining = res.unplaced;
   }
