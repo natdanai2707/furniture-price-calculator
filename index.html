@@ -1961,15 +1961,15 @@ function shelfPack(items, sheetW, sheetH, gap, allowRotate) {
 }
 
 // ── Guillotine bin packing (used for multi-sheet) ─────────
-// Tracks free rectangles and splits them after each placement,
-// allowing pieces to fill gaps alongside tall items.
+// Tracks non-overlapping free rectangles and splits them after
+// each placement — allows filling gaps beside tall items.
 function guillotinePack(items, sheetW, sheetH, gap, allowRotate) {
   const placed = [], unplaced = [];
 
-  // Sort: largest area first for best utilisation
+  // Sort: largest area first so big pieces are placed before small ones
   const sorted = [...items].sort((a, b) => (b.w * b.h) - (a.w * a.h));
 
-  // Initial free region (inset by gap on all sides)
+  // Initial free region (inset by gap border on all sides)
   let freeRects = [{ x: gap, y: gap, w: sheetW - 2*gap, h: sheetH - 2*gap }];
 
   for (const item of sorted) {
@@ -1984,7 +1984,7 @@ function guillotinePack(items, sheetW, sheetH, gap, allowRotate) {
       for (let i = 0; i < freeRects.length; i++) {
         const fr = freeRects[i];
         if (pw <= fr.w && ph <= fr.h) {
-          // Best-area-fit: prefer rect that wastes least area
+          // Best-area-fit: pick the tightest fitting free rect
           const score = fr.w * fr.h - pw * ph;
           if (!best || score < best.score) {
             best = { score, ori, idx: i, fr };
@@ -1999,17 +1999,18 @@ function guillotinePack(items, sheetW, sheetH, gap, allowRotate) {
       placed.push({ ...item, x: fr.x, y: fr.y, w: pw, h: ph, rotated: ori.rot });
       freeRects.splice(idx, 1);
 
-      // Right remainder (same height as placed item)
-      if (fr.w - pw - gap >= gap) {
-        freeRects.push({ x: fr.x + pw + gap, y: fr.y, w: fr.w - pw - gap, h: ph });
-      }
-      // Bottom remainder (full width of original free rect)
-      if (fr.h - ph - gap >= gap) {
-        freeRects.push({ x: fr.x, y: fr.y + ph + gap, w: fr.w, h: fr.h - ph - gap });
-      }
-      // Also keep right-full-height: allows stacking items in unused column above right remainder
-      if (fr.w - pw - gap >= gap && fr.h - ph - gap >= gap) {
-        freeRects.push({ x: fr.x + pw + gap, y: fr.y + ph + gap, w: fr.w - pw - gap, h: fr.h - ph - gap });
+      // Guillotine split: exactly 2 non-overlapping remainders.
+      // Choose cut direction by the longer leftover axis (avoids thin slivers).
+      const rightW  = fr.w - pw - gap;
+      const bottomH = fr.h - ph - gap;
+      if (rightW > bottomH) {
+        // Horizontal cut: RIGHT gets item height, BOTTOM gets full width
+        if (rightW >= gap)  freeRects.push({ x: fr.x + pw + gap, y: fr.y,         w: rightW,  h: ph       });
+        if (bottomH >= gap) freeRects.push({ x: fr.x,            y: fr.y + ph + gap, w: fr.w, h: bottomH });
+      } else {
+        // Vertical cut: BOTTOM gets item width, RIGHT gets full height
+        if (bottomH >= gap) freeRects.push({ x: fr.x,            y: fr.y + ph + gap, w: pw,   h: bottomH });
+        if (rightW >= gap)  freeRects.push({ x: fr.x + pw + gap, y: fr.y,           w: rightW, h: fr.h   });
       }
     } else {
       unplaced.push(item);
@@ -2093,10 +2094,19 @@ function runNesting() {
   }
   // ─────────────────────────────────────────────────────────
 
-  // Stats for selected sheet (use first sheet for waste %)
+  // Stats
   const sheetArea = dims.w * dims.h;
-  const usedArea  = bestResult.placed.reduce((s, p) => s + p.w * p.h, 0);
-  const wastePct  = (sheetArea - usedArea) / sheetArea * 100;
+  let usedArea, wastePct;
+  if (isMultiSheet) {
+    // Multi-sheet: compare total piece area vs total sheet area across all sheets
+    const totalPieceArea  = multiSheets.flat().reduce((s, p) => s + p.w * p.h, 0);
+    const totalSheetArea  = sheetArea * sheetsNeeded;
+    usedArea  = totalPieceArea;
+    wastePct  = (totalSheetArea - totalPieceArea) / totalSheetArea * 100;
+  } else {
+    usedArea  = bestResult.placed.reduce((s, p) => s + p.w * p.h, 0);
+    wastePct  = (sheetArea - usedArea) / sheetArea * 100;
+  }
 
   // ── Compare with other sheet size ────────────────────────
   const otherKey  = mat.size.includes('10') ? '4x8' : '5x10';
