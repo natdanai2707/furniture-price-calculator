@@ -1924,11 +1924,13 @@ function renderNestPieces() {
 // ── Core shelf-packing algorithm ──────────────────────────
 function shelfPack(items, sheetW, sheetH, gap, allowRotate) {
   const placed = [], unplaced = [];
-  // Sort: tallest (or widest if rotate) first, then by area
+  // Sort: tallest first → same height grouped by piece type → then area
   const sorted = [...items].sort((a, b) => {
     const hA = allowRotate ? Math.max(a.w, a.h) : a.h;
     const hB = allowRotate ? Math.max(b.w, b.h) : b.h;
-    return hB !== hA ? hB - hA : (b.w * b.h) - (a.w * a.h);
+    if (hB !== hA) return hB - hA;
+    if (a.id !== b.id) return a.id < b.id ? -1 : 1; // group same piece type
+    return (b.w * b.h) - (a.w * a.h);
   });
   let cx = gap, cy = gap, shelfH = 0;
   const maxX = sheetW - gap, maxY = sheetH - gap;
@@ -1961,13 +1963,20 @@ function shelfPack(items, sheetW, sheetH, gap, allowRotate) {
 }
 
 // ── Guillotine bin packing (used for multi-sheet) ─────────
-// Tracks non-overlapping free rectangles and splits them after
-// each placement — allows filling gaps beside tall items.
+// Uses top-left scoring so pieces fill left→right in rows
+// (same visual behaviour as shelf packing, but can also fill
+//  vertical gaps beside tall items).
 function guillotinePack(items, sheetW, sheetH, gap, allowRotate) {
   const placed = [], unplaced = [];
 
-  // Sort: largest area first so big pieces are placed before small ones
-  const sorted = [...items].sort((a, b) => (b.w * b.h) - (a.w * a.h));
+  // Sort: tallest first, same height → group by type, then area
+  const sorted = [...items].sort((a, b) => {
+    const hA = allowRotate ? Math.max(a.w, a.h) : a.h;
+    const hB = allowRotate ? Math.max(b.w, b.h) : b.h;
+    if (hB !== hA) return hB - hA;
+    if (a.id !== b.id) return a.id < b.id ? -1 : 1;
+    return (b.w * b.h) - (a.w * a.h);
+  });
 
   // Initial free region (inset by gap border on all sides)
   let freeRects = [{ x: gap, y: gap, w: sheetW - 2*gap, h: sheetH - 2*gap }];
@@ -1984,8 +1993,10 @@ function guillotinePack(items, sheetW, sheetH, gap, allowRotate) {
       for (let i = 0; i < freeRects.length; i++) {
         const fr = freeRects[i];
         if (pw <= fr.w && ph <= fr.h) {
-          // Best-area-fit: pick the tightest fitting free rect
-          const score = fr.w * fr.h - pw * ph;
+          // Top-left scoring: prefer topmost (smallest y) → leftmost x → narrower width.
+          // The pw tie-break makes thin pieces prefer portrait orientation (smaller width)
+          // so they fill a ROW instead of stacking in a column — far more space-efficient.
+          const score = fr.y * 1e9 + fr.x * 1e3 + pw;
           if (!best || score < best.score) {
             best = { score, ori, idx: i, fr };
           }
@@ -1999,19 +2010,15 @@ function guillotinePack(items, sheetW, sheetH, gap, allowRotate) {
       placed.push({ ...item, x: fr.x, y: fr.y, w: pw, h: ph, rotated: ori.rot });
       freeRects.splice(idx, 1);
 
-      // Guillotine split: exactly 2 non-overlapping remainders.
-      // Choose cut direction by the longer leftover axis (avoids thin slivers).
+      // Guillotine split: always horizontal cut.
+      // RIGHT gets item height (ph) — fits more same-height pieces alongside.
+      // BOTTOM gets full rect width — largest contiguous area for next pieces.
+      // Vertical cut is NOT used because portrait pieces (e.g. 30×1170) would
+      // create a 30mm-wide BOTTOM stub that's useless for everything else.
       const rightW  = fr.w - pw - gap;
       const bottomH = fr.h - ph - gap;
-      if (rightW > bottomH) {
-        // Horizontal cut: RIGHT gets item height, BOTTOM gets full width
-        if (rightW >= gap)  freeRects.push({ x: fr.x + pw + gap, y: fr.y,         w: rightW,  h: ph       });
-        if (bottomH >= gap) freeRects.push({ x: fr.x,            y: fr.y + ph + gap, w: fr.w, h: bottomH });
-      } else {
-        // Vertical cut: BOTTOM gets item width, RIGHT gets full height
-        if (bottomH >= gap) freeRects.push({ x: fr.x,            y: fr.y + ph + gap, w: pw,   h: bottomH });
-        if (rightW >= gap)  freeRects.push({ x: fr.x + pw + gap, y: fr.y,           w: rightW, h: fr.h   });
-      }
+      if (rightW >= gap)  freeRects.push({ x: fr.x + pw + gap, y: fr.y,            w: rightW, h: ph      });
+      if (bottomH >= gap) freeRects.push({ x: fr.x,            y: fr.y + ph + gap, w: fr.w,  h: bottomH });
     } else {
       unplaced.push(item);
     }
@@ -2072,11 +2079,11 @@ function runNesting() {
     return out;
   }
 
-  // Find max N (full sets that fit on 1 sheet)
+  // Find max N (full sets that fit on 1 sheet) — use guillotinePack for efficiency
   let bestN = 0, bestResult = null;
   for (let n = 1; n <= 200; n++) {
     const expanded = expandPieces(n, dims);
-    const res = shelfPack(expanded, dims.w, dims.h, gap, rot);
+    const res = guillotinePack(expanded, dims.w, dims.h, gap, rot);
     if (res.unplaced.length === 0) { bestN = n; bestResult = res; }
     else break;
   }
