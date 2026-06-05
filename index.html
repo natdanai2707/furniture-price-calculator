@@ -291,7 +291,7 @@
   <div>
     <h1>โปรแกรมคำนวณราคาเฟอร์นิเจอร์โลหะ</h1>
     <p>Metal Furniture Cost Estimator · ราคาทั้งหมดเป็นสกุลเงินบาท (฿) · v1.0</p>
-    <p style="font-size:11px;opacity:0.5;margin-top:1px;">อัพเดตล่าสุด: 06/05/2026 21:00</p>
+    <p style="font-size:11px;opacity:0.5;margin-top:1px;">อัพเดตล่าสุด: 29/05/2026 17:30</p>
   </div>
   <div style="margin-left:auto; display:flex; gap:10px;">
     <button class="btn btn-accent no-print" onclick="window.print()">🖨️ พิมพ์</button>
@@ -1970,13 +1970,10 @@ function shelfPack(items, sheetW, sheetH, gap, allowRotate) {
 function guillotinePack(items, sheetW, sheetH, gap, allowRotate) {
   const placed = [], unplaced = [];
 
-  // Sort: group by set first (so each set's pieces pack together),
-  // then tallest-first within each set, then by piece type, then by area.
-  // This lets set 0 occupy one region, set 1 the next, etc.,
-  // instead of placing ALL side panels before ANY top panels.
+  // Sort: tallest-first globally (max dim descending), then by piece type, then by area.
+  // Global sort lets large pieces claim space first regardless of which set they belong to,
+  // which creates clean full-width BOTTOM rects for subsequent pieces.
   const sorted = [...items].sort((a, b) => {
-    const sA = a.setIdx ?? 0, sB = b.setIdx ?? 0;
-    if (sA !== sB) return sA - sB;
     const hA = allowRotate ? Math.max(a.w, a.h) : a.h;
     const hB = allowRotate ? Math.max(b.w, b.h) : b.h;
     if (hB !== hA) return hB - hA;
@@ -1999,10 +1996,14 @@ function guillotinePack(items, sheetW, sheetH, gap, allowRotate) {
       for (let i = 0; i < freeRects.length; i++) {
         const fr = freeRects[i];
         if (pw <= fr.w && ph <= fr.h) {
-          // Top-left scoring: prefer topmost (smallest y) → leftmost x → narrower width.
-          // The pw tie-break makes thin pieces prefer portrait orientation (smaller width)
-          // so they fill a ROW instead of stacking in a column — far more space-efficient.
-          const score = fr.y * 1e9 + fr.x * 1e3 + pw;
+          // Top-left scoring: prefer topmost (smallest y) → leftmost x → orientation tie-break.
+          // Thin pieces (pipes/bars, aspect < 0.3) prefer portrait (small pw) to stand upright.
+          // Square-ish pieces (panels, aspect ≥ 0.3) prefer landscape (large pw) to lay flat,
+          // creating clean full-width BOTTOM rects at consistent y-heights.
+          const aspect = (item.shape === 'circle' || item.w === item.h) ? 1
+            : Math.min(item.w, item.h) / Math.max(item.w, item.h);
+          const thin = aspect < 0.3;
+          const score = fr.y * 1e9 + fr.x * 1e3 + (thin ? +pw : -pw);
           if (!best || score < best.score) {
             best = { score, ori, idx: i, fr };
           }
